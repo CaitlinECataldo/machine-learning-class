@@ -17,6 +17,22 @@ from sklearn.tree import DecisionTreeClassifier
 prob_models = ['log_reg','nb','lin_reg','knn','tree'] #models based on probabilites
 closed_form_models = ['nb','lin_reg','knn','tree'] #models that can't be iterated on
 
+# Dictionary of all of the available scalers
+scalers = {
+    'std_scaler': StandardScaler(), 
+    'min_max_scaler': MinMaxScaler()
+}
+
+models = {
+    'ridge': Ridge(),
+    'lasso': Lasso(),
+    'log_reg': LogisticRegression(),
+    'nb': GaussianNB(),
+    'lin_reg': LinearRegression(),
+    'knn': KNeighborsClassifier(),
+    'tree': DecisionTreeClassifier()
+}
+
 def find_outliers_z(df, column, threshold=3):
     # cols = df.columns
     # for col in cols:
@@ -83,6 +99,27 @@ def validateParams(params, scalers, models):
         elif isinstance(params['test_size'], str):
             raise ValueError(f"The 'test_size' parameter for 'runPipeline()' must be a float in the range (0.0, 1.0), an int in the range [1, inf) or None. Got {params['test_size']} as a {type(params['test_size'])} instead.")
 
+def modelDictionary(key=None):
+    valid_keys = ['models','scalers','prob_models','closed_form_models']
+
+    if key in valid_keys:
+        if key == 'models':
+            return models.keys().tolist()
+        elif key == 'scalers':
+            return scalers.keys().tolist()
+        elif key == 'prob_models':
+            return prob_models
+        elif key == 'closed_form_models':
+            return closed_form_models
+    elif key == None:
+        return {
+            'models': models.keys(),
+            'scalers': scalers.keys(),
+            'prob_models': prob_models,
+            'closed_form_models': closed_form_models
+        }
+    else:
+        raise ValueError(f"Unknown key: '{key}'. Please use one of the following values: {valid_keys}")
 
 def runPipeline(X, y, parameters=None):
     
@@ -123,22 +160,6 @@ def runPipeline(X, y, parameters=None):
         
     params['pipeline_results'] = {}
     
-    
-    # Dictionary of all of the available scalers
-    scalers = {
-        'std_scaler': StandardScaler(), 
-        'min_max_scaler': MinMaxScaler()
-    }
-    
-    models = {
-        'ridge': Ridge(),
-        'lasso': Lasso(),
-        'log_reg': LogisticRegression(max_iter=params['max_iter'], random_state=params['random_state']),
-        'nb': GaussianNB(),
-        'lin_reg': LinearRegression(),
-        'knn': KNeighborsClassifier(n_neighbors=params['n_neighbors']),
-        'tree': DecisionTreeClassifier(random_state=params['random_state'], class_weight=params['class_weight'])
-    }
 
     if params['ccp_alpha'] == None:
         params.pop('ccp_alpha')
@@ -213,6 +234,15 @@ def runPipeline(X, y, parameters=None):
     # Note: You can set parameters for any step by using its name followed by a double underscore(__) and the parameter name.
     
     grid = dict()
+
+    if params['model_name'] != 'knn':
+        grid[f"{params['model_name']}__random_state"] = [params['random_state']]
+
+    if  params['n_neighbors'] != None and params['model_name'] == 'knn':
+        grid[f"{params['model_name']}__n_neighbors"] = [params['n_neighbors']]
+
+    if params['class_weight'] != None:
+        grid[f"{params['model_name']}__class_weight"] = [params['class_weight']]
     
     if params['model_name'] not in closed_form_models:
         grid[f"{params['model_name']}__max_iter"] = [params['max_iter']]
