@@ -12,10 +12,14 @@ from sklearn.compose import ColumnTransformer # importing ColumnTransformer clas
 from scipy.stats import zscore
 from sklearn.naive_bayes import GaussianNB, MultinomialNB
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.tree import DecisionTreeClassifier
+from sklearn.tree import DecisionTreeClassifier, plot_tree, DecisionTreeRegressor, export_graphviz
+from sklearn.svm import SVC
 
 prob_models = ['log_reg','nb','lin_reg','knn','tree'] #models based on probabilites
-closed_form_models = ['nb','lin_reg','knn','tree'] #models that can't be iterated on
+closed_form_models = ['nb','lin_reg','knn','tree','reg_tree'] #models that can't be iterated on
+
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.preprocessing import LabelEncoder
 
 # Dictionary of all of the available scalers
 scalers = {
@@ -30,7 +34,9 @@ models = {
     'nb': GaussianNB(),
     'lin_reg': LinearRegression(),
     'knn': KNeighborsClassifier(),
-    'tree': DecisionTreeClassifier()
+    'tree': DecisionTreeClassifier(),
+    'reg_tree': DecisionTreeRegressor(),
+    'svc': SVC(probability=True)
 }
 
 def find_outliers_z(df, column, threshold=3):
@@ -53,7 +59,7 @@ def validateParams(params, scalers, models):
         ### Refactor list checks as a loop ###
         
         # Validate scaler name
-        if params['scaler_name'] not in valid_scalers:
+        if params['scaler_name'] is not None and params['scaler_name'] not in valid_scalers:
             raise ValueError(f"Unknown scaler name: '{params['scaler_name']}'. Please use one of the following values: {valid_scalers}")
             
         # Validate model name
@@ -121,12 +127,14 @@ def modelDictionary(key=None):
     else:
         raise ValueError(f"Unknown key: '{key}'. Please use one of the following values: {valid_keys}")
 
-def runPipeline(X, y, parameters=None):
+def runPipeline(X, y, showChart=True, parameters=None):
     
     # Remove all rows from X and y where y is null
     mask = y.notna()
     X = X[mask]
     y = y[mask]
+
+    multiclass = False # For charting purposes
     
     bundle = dict() # These will all of the return values
     
@@ -135,7 +143,7 @@ def runPipeline(X, y, parameters=None):
             'random_state': 2024,
             'max_iter': 1000,
             'strategy': 'median', 
-            'scaler_name': 'std_scaler',
+            'scaler_name': None,
             'model_name': 'ridge',
             'grid': {
                 'start': 0.1,
@@ -148,7 +156,9 @@ def runPipeline(X, y, parameters=None):
             'drop_cols': None,
             'n_neighbors': 3,
             'ccp_alpha': 0,
-            'class_weight': None
+            'class_weight': None,
+            'max_depth': None,
+            'min_samples_split': None
         }
     
     
@@ -167,7 +177,9 @@ def runPipeline(X, y, parameters=None):
           
     validateParams(params, scalers, models)
 
-    params['scaler'] = scalers[params['scaler_name']]
+    if params['scaler_name'] is not None:
+        params['scaler'] = scalers[params['scaler_name']]
+    
     params['model'] = models[params['model_name']]
     
     if params['drop_cols'] != None:
@@ -176,28 +188,14 @@ def runPipeline(X, y, parameters=None):
     
     # Encode binary categorical values 
     label_encoder = LabelEncoder()
-    
-    # X_col_cat = X.select_dtypes(include='object').columns
-    # X_col_num = X.select_dtypes(exclude='object').columns
-    # X_col_binary = [col for col in X_col_cat if X[col].nunique() == 2]
-    
-    # print(f"X_col_binary: {X_col_binary}")
 
     
-    if y.nunique() == 2:
-        y_binary_labels = y.unique()
+    if y.nunique() >= 2:
+        if y.nunique() > 2: multiclass = True
+
         y = pd.Series(label_encoder.fit_transform(y), name=y.name)
-        
-#     X_col_binary_labels = []
-    
-#     print(f"X before label encoder transfer: {X}")
-    
-#     for col in X_col_binary:
-#         X_col_binary_labels.append(X[col].unique())
-#         X[col] = label_encoder.fit_transform(X[col])
-        
-#     print(f"X_col_binary labels: {X_col_binary_labels}")
-    
+        params['y_label_encoder'] = label_encoder
+        y_cat_labels = label_encoder.classes_
     
     # Remove unnamed columns from the dataframe
     X = X.loc[:, ~X.columns.str.contains('^Unnamed')]
@@ -211,10 +209,15 @@ def runPipeline(X, y, parameters=None):
     
     
     # Numeric variables pipeline
-    num_pipeline = Pipeline([
-        ('imputer', SimpleImputer(strategy=params['strategy'])),
-        ('std_scaler', params['scaler'])
-    ])
+    if params['scaler_name'] is not None:
+        num_pipeline = Pipeline([
+            ('imputer', SimpleImputer(strategy=params['strategy'])),
+            ('std_scaler', params['scaler'])
+        ])
+    else:
+            num_pipeline = Pipeline([
+            ('imputer', SimpleImputer(strategy=params['strategy'])) 
+        ])
     
     # Unified preprocessing for both numeric and categorical data
     preprocessing = ColumnTransformer([
@@ -235,8 +238,14 @@ def runPipeline(X, y, parameters=None):
     
     grid = dict()
 
-    if params['model_name'] != 'knn':
+    if params['model_name'] not in ['knn','nb']:
         grid[f"{params['model_name']}__random_state"] = [params['random_state']]
+
+    if params['max_depth'] is not None:
+        grid[f"{params['model_name']}__max_depth"] = params['max_depth']
+        
+    if params['min_samples_split'] is not None:
+        grid[f"{params['model_name']}__min_samples_split"] = params['min_samples_split']
 
     if  params['n_neighbors'] != None and params['model_name'] == 'knn':
         grid[f"{params['model_name']}__n_neighbors"] = [params['n_neighbors']]
@@ -249,15 +258,14 @@ def runPipeline(X, y, parameters=None):
 
     
     # if params['model_name'] not in prob_models:
-    if params['model_name'] in closed_form_models and params['model_name'] != 'knn':
+    if params['model_name'] in closed_form_models and params['model_name'] not in ['knn','nb']:
     
         start = params['grid']['start']
         stop = params['grid']['stop']
         step = params['grid']['step']
 
-        if params['model_name'] == 'tree':
+        if params['model_name'] in ['tree','reg_tree']:
             grid[f"{params['model_name']}__ccp_alpha"] = np.arange(start,stop,step)
-            print("grid: ",grid)
         else:
             grid[f"{params['model_name']}__alpha"] = np.arange(start,stop,step)
     
@@ -283,12 +291,22 @@ def runPipeline(X, y, parameters=None):
     print(f"Test R² Score: {test_score:.4f}")
     
     # Predict on the test set using the trained model
+    y_pred = search.predict(X)
     y_pred_test = search.predict(X_test)
     y_pred_train = search.predict(X_train)
-    pred_df = X_test.copy()
-    pred_df[f"pred_{y.name}"] = y_pred_test
     mae = mean_absolute_error(y_test, y_pred_test)
+    pred_df = X.copy()
+
+    if params['y_label_encoder'] is not None:
+        y_pred_test = label_encoder.inverse_transform(y_pred_test)
+        y_pred_train = label_encoder.inverse_transform(y_pred_train)
+        y_pred = label_encoder.inverse_transform(y_pred)
+        y_test = label_encoder.inverse_transform(y_test)
+        y_train = label_encoder.inverse_transform(y_train)
+
+    pred_df[f"pred_{y.name}"] = y_pred
     print("Mean Absolute Error:", mae)
+    print("---------------------------")
     
     if params['model_name'] in prob_models:
         
@@ -302,13 +320,17 @@ def runPipeline(X, y, parameters=None):
             'y_pred_train_prob': y_pred_train_prob,
             'y_pred_test': y_pred_test,
             'y_pred_train': y_pred_train,
-            'y_binary_labels': y_binary_labels,
+            'y_pred': y_pred,
+            'y_cat_labels': y_cat_labels,
             'X_test': X_test,
             'X_train': X_train,
-            'model': results
+            'results': results,
+            'model_name': params['model_name'],
+            'model': best_model
         }
-    
-        chartEvals(chart_params)
+
+        if showChart:
+            chartEvals(chart_params, multiclass=multiclass)
     
     params['pipeline_results']['mae'] = mae
     params['pipeline_results']['mae_best_score'] = results.best_score_
@@ -337,8 +359,9 @@ def predict(params, threshold=None):
     y = params['y']
     y_pred_test = params['y_pred_test']
     y_pred_train = params['y_pred_train']
-    model = params['model']
+    model = params['results']
     y_probs = params['y_probs']
+    
     
     y_pred_custom = (y_probs > threshold).astype(int)
     
@@ -349,14 +372,27 @@ def predict(params, threshold=None):
     pred_df = X_test.copy()
     pred_df[f"pred_{y.name}"] = y_pred_test
 
-def chartEvals(chartParams):
+def chartEvals(chartParams, multiclass=False):
     bundle = dict()
     y_train = chartParams['y_train']
     y_pred_train = chartParams['y_pred_train']
     y_test = chartParams['y_test']
     y_pred_test = chartParams['y_pred_test']
     y_pred_test_prob = chartParams['y_pred_test_prob']
-    y_binary_labels = chartParams['y_binary_labels']
+    y_cat_labels = chartParams['y_cat_labels']
+    model_name = chartParams['model_name']
+    X_train = chartParams['X_train']
+    model = chartParams['model']
+
+    # Have to get the column names after preprocessing
+    preprocessor = chartParams['model'].named_steps['preprocessing']
+    onehot_cols = preprocessor.named_transformers_['cat'].get_feature_names_out()
+
+    feature_names = np.concatenate([
+        chartParams['X_train'].select_dtypes(include=[np.number]).columns,
+        onehot_cols
+    ])
+
 
     
     # Predict probabilities on the testing set
@@ -371,7 +407,7 @@ def chartEvals(chartParams):
     bundle['conf_matrix_test'] = conf_matrix
     bundle['conf_matrix_train'] = conf_matrix_train
 
-    cm_display = ConfusionMatrixDisplay(confusion_matrix = conf_matrix, display_labels=y_binary_labels)
+    cm_display = ConfusionMatrixDisplay(confusion_matrix = conf_matrix, display_labels=y_cat_labels)
     cm_display.plot()
     plt.show()
 
@@ -380,30 +416,67 @@ def chartEvals(chartParams):
     print("\t\t-----------------------------------------")
     print(classification_report(y_test, y_pred_test))
 
+    if model_name == 'tree':
+        
+        tree_model = model.named_steps['tree']
+        plt.figure(figsize=(14,20))
+        export_graphviz(tree_model,"ship_model.dot",feature_names=feature_names, rounded=True, class_names=['No','Yes'], filled=True)
+        plt.show()
 
-    fpr, tpr, thresholds = roc_curve(y_test, y_pred_test_prob)
-    
-    # Compute the Area Under the Curve (AUC) for the ROC curve
-    roc_auc = auc(fpr, tpr)
+    if not multiclass:
+        fpr, tpr, thresholds = roc_curve(y_test, y_pred_test_prob)
+        
+        # Compute the Area Under the Curve (AUC) for the ROC curve
+        roc_auc = auc(fpr, tpr)
 
-    # Compute Youden's J statistic for each threshold
-    youden_j = tpr - fpr
-    optimal_threshold_index = np.argmax(youden_j)
-    optimal_threshold = thresholds[optimal_threshold_index]
+        # Compute Youden's J statistic for each threshold
+        youden_j = tpr - fpr
+        optimal_threshold_index = np.argmax(youden_j)
+        optimal_threshold = thresholds[optimal_threshold_index]
 
-    print(f"Optimal Threshold: {optimal_threshold:.4f}")
+        print(f"Optimal Threshold: {optimal_threshold:.4f}")
 
-    # Plot the ROC curve with the optimal threshold marked
-    plt.figure(figsize=(8, 6))
-    plt.plot(fpr, tpr, color='blue', lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
-    plt.scatter(fpr[optimal_threshold_index], tpr[optimal_threshold_index], color='red', marker='o', label=f'Optimal Threshold = {optimal_threshold:.4f}')
-    plt.plot([0, 1], [0, 1], color='grey', lw=2, linestyle='--')
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.05])
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('Receiver Operating Characteristic (ROC) Curve')
-    plt.legend(loc='lower right')
-    plt.show()
+        # Plot the ROC curve with the optimal threshold marked
+        plt.figure(figsize=(8, 6))
+        plt.plot(fpr, tpr, color='blue', lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
+        plt.scatter(fpr[optimal_threshold_index], tpr[optimal_threshold_index], color='red', marker='o', label=f'Optimal Threshold = {optimal_threshold:.4f}')
+        plt.plot([0, 1], [0, 1], color='grey', lw=2, linestyle='--')
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title('Receiver Operating Characteristic (ROC) Curve')
+        plt.legend(loc='lower right')
+        plt.show()
 
     return conf_matrix
+
+def boxplotGrid(df):
+    number_cols = df.select_dtypes(exclude=['object']).dropna(axis=1)
+    total_num_cols = number_cols.shape[1]
+    plt_cols = 3
+    plt_rows = (total_num_cols % plt_cols) + total_num_cols // plt_cols
+    width = 10
+    height = 8
+    axes_list = []
+
+    fig, axes = plt.subplots(plt_cols, plt_rows, figsize=(width, height))
+    plt.tight_layout(pad=2.0)
+    
+    for i in range(plt_cols):
+        for j in range(plt_rows):
+
+            axes_list.append(axes[i, j])
+            
+    for i, ax in enumerate(axes_list[total_num_cols:]):
+         fig.delaxes(ax)
+    #axes_list = axes_list[:total_num_cols]
+        # axes[0, 0].boxplot(data)
+        # axes[0, 0].set_title(title) 
+    for i, col in enumerate(number_cols):
+        title = df[col].name
+        data = df[col]
+        axes_list[i].boxplot(data)
+        axes_list[i].set_title(title)
+    
+    plt.show()
