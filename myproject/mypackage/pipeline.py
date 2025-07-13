@@ -15,6 +15,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier, plot_tree, DecisionTreeRegressor, export_graphviz
 from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score
+import copy
 
 prob_models = ['log_reg','nb','lin_reg','knn','tree'] #models based on probabilites
 closed_form_models = ['nb','lin_reg','knn','tree','reg_tree'] #models that can't be iterated on
@@ -71,7 +72,7 @@ def validateParams(params, scalers, models):
             
         # Validate scoring
         if params['scoring'] is not None and params['scoring'] not in scoring:
-            raise ValueError(f"Unknown scaler name: '{params['scoring']}'. Please use one of the following values: {valid_scoring}")
+            raise ValueError(f"Unknown scaler name: '{params['scoring']}'. Please use one of the following values: {scoring}")
             
         # Validate impute strategy
         if params['strategy'] not in valid_strats:
@@ -161,15 +162,19 @@ def runPipeline(X, y, showChart=True, parameters=None):
             'ccp_alpha': 0,
             'class_weight': None,
             'max_depth': None,
-            'min_samples_split': None
+            'min_samples_split': None,
+            'y_label_encoder': None
         }
     
     
      # Ensure all user given parameters are assigned to params
-    if parameters == None:
-        params = default_params
-    else:
-        params = {**default_params, **parameters} # Overrides all default params with user given params
+    params = copy.deepcopy(default_params)
+    if parameters is not None:
+        for k, v in parameters.items():
+            if isinstance(v, dict) and k in params and isinstance(params[k], dict):
+                params[k].update(v)
+            else:
+                params[k] = v
         
     params['pipeline_results'] = {}
 
@@ -203,13 +208,17 @@ def runPipeline(X, y, showChart=True, parameters=None):
     
     if y.nunique() > 2: multiclass = True
     
-    if params['model_name'] in models_that_need_encoded_y:
-        y = pd.Series(label_encoder.fit_transform(y), name=y.name)
-        params['y_label_encoder'] = label_encoder
-        y_cat_labels = label_encoder.classes_
+    if y.dtype == 'object' or y.dtype == 'string':
+        if params['model_name'] in models_that_need_encoded_y or y.nunique() >= 2:
+            y = pd.Series(label_encoder.fit_transform(y), name=y.name)
+            params['y_label_encoder'] = label_encoder
+            y_cat_labels = label_encoder.classes_
+        else:
+            params['y_label_encoder'] = None
+            y_cat_labels = label_encoder.classes_
     else:
+        y_cat_labels = None
         params['y_label_encoder'] = None
-        y_cat_labels = y.unique()
     
     # Remove unnamed columns from the dataframe
     X = X.loc[:, ~X.columns.str.contains('^Unnamed')]
@@ -310,16 +319,17 @@ def runPipeline(X, y, showChart=True, parameters=None):
     y_pred_train = search.predict(X_train)
     pred_df = X.copy()
 
-    if multiclass:
+    if multiclass or params['scoring'] == 'accuracy':
         accuracy = accuracy_score(y_test, y_pred_test)
         print(f"Test Set Accuracy: {accuracy:.4f}")
         print("---------------------------")
-    else:
+    elif params['scoring'] == 'neg_mean_absolute_error' or params['scoring'] is None:
         accuracy = mean_absolute_error(y_test, y_pred_test)
         print("Mean Absolute Error:", accuracy)
         print("---------------------------")
 
-    if params['y_label_encoder'] is not None:
+    if params['y_label_encoder'] is not None and params['model_name'] not in ['log_reg']:
+        print("Model name: ", params['model_name'])
         y_pred_test = label_encoder.inverse_transform(y_pred_test)
         y_pred_train = label_encoder.inverse_transform(y_pred_train)
         y_pred = label_encoder.inverse_transform(y_pred)
@@ -404,10 +414,17 @@ def chartEvals(chartParams, multiclass=False):
     model_name = chartParams['model_name']
     X_train = chartParams['X_train']
     model = chartParams['model']
+    pos_labels = y_cat_labels
 
     # Have to get the column names after preprocessing
     preprocessor = chartParams['model'].named_steps['preprocessing']
-    onehot_cols = preprocessor.named_transformers_['cat'].get_feature_names_out()
+    # onehot_cols = preprocessor.named_transformers_['cat'].get_feature_names_out()
+
+    try:
+        cat_encoder = preprocessor.transformers_[1][1]  # assuming 'cat' is 2nd transformer
+        onehot_cols = cat_encoder.get_feature_names_out()
+    except:
+        onehot_cols = []
 
     feature_names = np.concatenate([
         chartParams['X_train'].select_dtypes(include=[np.number]).columns,
@@ -437,6 +454,11 @@ def chartEvals(chartParams, multiclass=False):
     print("\t\t-----------------------------------------")
     print(classification_report(y_test, y_pred_test))
 
+    if hasattr(y_test, 'dtype') and np.issubdtype(y_test.dtype, np.integer):
+        pos_label = 1
+    else:
+        pos_label = 'Yes'  # fallback for unencoded
+
     if model_name == 'tree':
         
         tree_model = model.named_steps['tree']
@@ -445,7 +467,7 @@ def chartEvals(chartParams, multiclass=False):
         plt.show()
 
     if not multiclass:
-        fpr, tpr, thresholds = roc_curve(y_test, y_pred_test_prob)
+        fpr, tpr, thresholds = roc_curve(y_test, y_pred_test_prob,pos_label=pos_label)
         
         # Compute the Area Under the Curve (AUC) for the ROC curve
         roc_auc = auc(fpr, tpr)
