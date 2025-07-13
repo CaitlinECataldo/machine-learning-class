@@ -14,9 +14,12 @@ from sklearn.naive_bayes import GaussianNB, MultinomialNB
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier, plot_tree, DecisionTreeRegressor, export_graphviz
 from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score
 
 prob_models = ['log_reg','nb','lin_reg','knn','tree'] #models based on probabilites
 closed_form_models = ['nb','lin_reg','knn','tree','reg_tree'] #models that can't be iterated on
+scoring = ['accuracy','neg_mean_absolute_error']
+
 
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.preprocessing import LabelEncoder
@@ -24,7 +27,7 @@ from sklearn.preprocessing import LabelEncoder
 # Dictionary of all of the available scalers
 scalers = {
     'std_scaler': StandardScaler(), 
-    'min_max_scaler': MinMaxScaler()
+    'min_max_scaler': MinMaxScaler(),
 }
 
 models = {
@@ -52,7 +55,7 @@ def validateParams(params, scalers, models):
         valid_strats = ['median']
         valid_scalers = list(scalers.keys())
         valid_models = list(models.keys())
-        valid_scoring = ['neg_mean_absolute_error']
+        # valid_scoring = ['neg_mean_absolute_error']
 
         
         
@@ -67,7 +70,7 @@ def validateParams(params, scalers, models):
             raise ValueError(f"Unknown scaler name: '{params['model_name']}'. Please use one of the following values: {valid_models}")
             
         # Validate scoring
-        if params['scoring'] not in valid_scoring:
+        if params['scoring'] is not None and params['scoring'] not in scoring:
             raise ValueError(f"Unknown scaler name: '{params['scoring']}'. Please use one of the following values: {valid_scoring}")
             
         # Validate impute strategy
@@ -150,7 +153,7 @@ def runPipeline(X, y, showChart=True, parameters=None):
                 'stop': 2.1,
                 'step': 0.1
             },
-            'scoring': 'neg_mean_absolute_error',
+            'scoring': None,
             'cv': 5,
             'n_jobs': -1,
             'drop_cols': None,
@@ -169,7 +172,14 @@ def runPipeline(X, y, showChart=True, parameters=None):
         params = {**default_params, **parameters} # Overrides all default params with user given params
         
     params['pipeline_results'] = {}
+
+    # Infer task type based on model name
+    is_classification = params['model_name'] in ['nb', 'tree', 'log_reg', 'knn', 'svc']
+    is_regression = params['model_name'] in ['ridge', 'lasso', 'lin_reg', 'reg_tree']
     
+    # Set default scoring if not provided
+    if params['scoring'] is None:
+        params['scoring'] = 'accuracy' if is_classification else 'neg_mean_absolute_error'
 
     if params['ccp_alpha'] == None:
         params.pop('ccp_alpha')
@@ -189,13 +199,17 @@ def runPipeline(X, y, showChart=True, parameters=None):
     # Encode binary categorical values 
     label_encoder = LabelEncoder()
 
+    models_that_need_encoded_y = ['log_reg','svc']
     
-    if y.nunique() >= 2:
-        if y.nunique() > 2: multiclass = True
-
+    if y.nunique() > 2: multiclass = True
+    
+    if params['model_name'] in models_that_need_encoded_y:
         y = pd.Series(label_encoder.fit_transform(y), name=y.name)
         params['y_label_encoder'] = label_encoder
         y_cat_labels = label_encoder.classes_
+    else:
+        params['y_label_encoder'] = None
+        y_cat_labels = y.unique()
     
     # Remove unnamed columns from the dataframe
     X = X.loc[:, ~X.columns.str.contains('^Unnamed')]
@@ -274,7 +288,7 @@ def runPipeline(X, y, showChart=True, parameters=None):
 
     # Fit GridSearchCV to the training data
     results = search.fit(X_train, y_train)
-    print('MAE: %.3f' % -results.best_score_)
+    print('accuracy: %.3f' % -results.best_score_)
     print('Config: %s' % results.best_params_)
     
     # Get best model (pipeline with best hyperparameters)
@@ -294,8 +308,16 @@ def runPipeline(X, y, showChart=True, parameters=None):
     y_pred = search.predict(X)
     y_pred_test = search.predict(X_test)
     y_pred_train = search.predict(X_train)
-    mae = mean_absolute_error(y_test, y_pred_test)
     pred_df = X.copy()
+
+    if multiclass:
+        accuracy = accuracy_score(y_test, y_pred_test)
+        print(f"Test Set Accuracy: {accuracy:.4f}")
+        print("---------------------------")
+    else:
+        accuracy = mean_absolute_error(y_test, y_pred_test)
+        print("Mean Absolute Error:", accuracy)
+        print("---------------------------")
 
     if params['y_label_encoder'] is not None:
         y_pred_test = label_encoder.inverse_transform(y_pred_test)
@@ -305,8 +327,7 @@ def runPipeline(X, y, showChart=True, parameters=None):
         y_train = label_encoder.inverse_transform(y_train)
 
     pred_df[f"pred_{y.name}"] = y_pred
-    print("Mean Absolute Error:", mae)
-    print("---------------------------")
+  
     
     if params['model_name'] in prob_models:
         
@@ -332,9 +353,9 @@ def runPipeline(X, y, showChart=True, parameters=None):
         if showChart:
             chartEvals(chart_params, multiclass=multiclass)
     
-    params['pipeline_results']['mae'] = mae
-    params['pipeline_results']['mae_best_score'] = results.best_score_
-    params['pipeline_results']['mae_best_params'] = results.best_params_
+    params['pipeline_results']['accuracy'] = accuracy
+    params['pipeline_results']['accuracy_best_score'] = results.best_score_
+    params['pipeline_results']['accuracy_best_params'] = results.best_params_
     params['pipeline_results']['y_pred'] = y_pred_test
     params['pipeline_results']['pred_df'] = pred_df
     params['pipeline_results']['best_model'] = best_model
