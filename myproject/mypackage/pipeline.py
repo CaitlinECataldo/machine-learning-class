@@ -15,10 +15,11 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier, plot_tree, DecisionTreeRegressor, export_graphviz
 from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score
+from sklearn.ensemble import RandomForestClassifier
 import copy
 
-prob_models = ['log_reg','nb','lin_reg','knn','tree'] #models based on probabilites
-closed_form_models = ['nb','lin_reg','knn','tree','reg_tree'] #models that can't be iterated on
+prob_models = ['log_reg','nb','lin_reg','knn','tree','rf'] #models based on probabilites
+closed_form_models = ['nb','lin_reg','knn','tree','reg_tree','rf'] #models that can't be iterated on
 scoring = ['accuracy','neg_mean_absolute_error']
 
 
@@ -40,7 +41,8 @@ models = {
     'knn': KNeighborsClassifier(),
     'tree': DecisionTreeClassifier(),
     'reg_tree': DecisionTreeRegressor(),
-    'svc': SVC(probability=True)
+    'svc': SVC(probability=True),
+    'rf': RandomForestClassifier(),
 }
 
 def find_outliers_z(df, column, threshold=3):
@@ -163,7 +165,9 @@ def runPipeline(X, y, showChart=True, parameters=None):
             'class_weight': None,
             'max_depth': None,
             'min_samples_split': None,
-            'y_label_encoder': None
+            'y_label_encoder': None,
+            'n_estimators': None,
+            'verbose': 0
         }
     
     
@@ -179,7 +183,7 @@ def runPipeline(X, y, showChart=True, parameters=None):
     params['pipeline_results'] = {}
 
     # Infer task type based on model name
-    is_classification = params['model_name'] in ['nb', 'tree', 'log_reg', 'knn', 'svc']
+    is_classification = params['model_name'] in ['nb', 'tree', 'log_reg', 'knn', 'svc','rf']
     is_regression = params['model_name'] in ['ridge', 'lasso', 'lin_reg', 'reg_tree']
     
     # Set default scoring if not provided
@@ -207,18 +211,15 @@ def runPipeline(X, y, showChart=True, parameters=None):
     models_that_need_encoded_y = ['log_reg','svc']
     
     if y.nunique() > 2: multiclass = True
+    classification_models = ['log_reg','svc','nb','tree','knn']
     
-    if y.dtype == 'object' or y.dtype == 'string':
-        if params['model_name'] in models_that_need_encoded_y or y.nunique() >= 2:
-            y = pd.Series(label_encoder.fit_transform(y), name=y.name)
-            params['y_label_encoder'] = label_encoder
-            y_cat_labels = label_encoder.classes_
-        else:
-            params['y_label_encoder'] = None
-            y_cat_labels = label_encoder.classes_
+    if params['model_name'] in classification_models and (y.dtype == 'object' or y.dtype == 'string'):
+        y = pd.Series(label_encoder.fit_transform(y), name=y.name)
+        params['y_label_encoder'] = label_encoder
+        y_cat_labels = label_encoder.classes_
     else:
-        y_cat_labels = None
         params['y_label_encoder'] = None
+        y_cat_labels = None
     
     # Remove unnamed columns from the dataframe
     X = X.loc[:, ~X.columns.str.contains('^Unnamed')]
@@ -279,6 +280,8 @@ def runPipeline(X, y, showChart=True, parameters=None):
     if params['model_name'] not in closed_form_models:
         grid[f"{params['model_name']}__max_iter"] = [params['max_iter']]
 
+    if params['n_estimators'] is not None and params['model_name'] in ['rf']:
+        grid[f"{params['model_name']}__n_estimators"] = [params['n_estimators']]
     
     # if params['model_name'] not in prob_models:
     if params['model_name'] in closed_form_models and params['model_name'] not in ['knn','nb']:
@@ -287,12 +290,12 @@ def runPipeline(X, y, showChart=True, parameters=None):
         stop = params['grid']['stop']
         step = params['grid']['step']
 
-        if params['model_name'] in ['tree','reg_tree']:
+        if params['model_name'] in ['tree','reg_tree','rf']:
             grid[f"{params['model_name']}__ccp_alpha"] = np.arange(start,stop,step)
         else:
             grid[f"{params['model_name']}__alpha"] = np.arange(start,stop,step)
     
-    search = GridSearchCV(estimator = final_pipeline, param_grid = grid, scoring = params['scoring'],cv = params['cv'], n_jobs = params['n_jobs'])
+    search = GridSearchCV(estimator = final_pipeline, param_grid = grid, scoring = params['scoring'],cv = params['cv'], n_jobs = params['n_jobs'], verbose=params['verbose'])
     # Fit the GridSearchCV object to the training data
 
     # Fit GridSearchCV to the training data
@@ -430,8 +433,6 @@ def chartEvals(chartParams, multiclass=False):
         chartParams['X_train'].select_dtypes(include=[np.number]).columns,
         onehot_cols
     ])
-
-
     
     # Predict probabilities on the testing set
     conf_matrix_train = confusion_matrix(y_train, y_pred_train)
@@ -463,9 +464,10 @@ def chartEvals(chartParams, multiclass=False):
         
         tree_model = model.named_steps['tree']
         plt.figure(figsize=(14,20))
-        export_graphviz(tree_model,"ship_model.dot",feature_names=feature_names, rounded=True, class_names=['No','Yes'], filled=True)
+        export_graphviz(tree_model,"tree_model.dot",feature_names=feature_names, rounded=True, class_names=y_cat_labels, filled=True)
         plt.show()
 
+    
     if not multiclass:
         fpr, tpr, thresholds = roc_curve(y_test, y_pred_test_prob,pos_label=pos_label)
         
