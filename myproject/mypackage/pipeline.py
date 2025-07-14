@@ -17,13 +17,16 @@ from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score
 from sklearn.ensemble import RandomForestClassifier
 import copy
+from imblearn.over_sampling import SMOTE
+from imblearn.under_sampling import RandomUnderSampler
 
 prob_models = ['log_reg','nb','lin_reg','knn','tree','rf'] #models based on probabilites
 closed_form_models = ['nb','lin_reg','knn','tree','reg_tree','rf'] #models that can't be iterated on
 scoring = ['accuracy','neg_mean_absolute_error']
+samples = ['smote','undersample']
 
 
-from sklearn.base import BaseEstimator, ClassifierMixin
+from imblearn.base import BaseSampler
 from sklearn.preprocessing import LabelEncoder
 
 # Dictionary of all of the available scalers
@@ -167,7 +170,8 @@ def runPipeline(X, y, showChart=True, parameters=None):
             'min_samples_split': None,
             'y_label_encoder': None,
             'n_estimators': None,
-            'verbose': 0
+            'verbose': 0,
+            'balance': None
         }
     
     
@@ -217,6 +221,10 @@ def runPipeline(X, y, showChart=True, parameters=None):
         y = pd.Series(label_encoder.fit_transform(y), name=y.name)
         params['y_label_encoder'] = label_encoder
         y_cat_labels = label_encoder.classes_
+    elif y.nunique() > 1 and y.dtype == 'object':
+        y = pd.Series(label_encoder.fit_transform(y), name=y.name)
+        params['y_label_encoder'] = label_encoder
+        y_cat_labels = label_encoder.classes_
     else:
         params['y_label_encoder'] = None
         y_cat_labels = None
@@ -256,7 +264,11 @@ def runPipeline(X, y, showChart=True, parameters=None):
         (f"{params['model_name']}", params['model'])
     ])
     
-    # Define the grid of hyperparameters to search
+    if params['balance'] is not None:
+        print("y_train: ", y_train)
+        print("X_train: ", X_train)
+        X_train, y_train = balanceData(X, y, method=params['balance'], random_state=params['random_state'])
+    
 
     # Note: You can set parameters for any step by using its name followed by a double underscore(__) and the parameter name.
     
@@ -331,7 +343,8 @@ def runPipeline(X, y, showChart=True, parameters=None):
         print("Mean Absolute Error:", accuracy)
         print("---------------------------")
 
-    if params['y_label_encoder'] is not None and params['model_name'] not in ['log_reg']:
+    if params['y_label_encoder'] is not None:
+    # if params['y_label_encoder'] is not None and params['model_name'] not in ['log_reg']:
         print("Model name: ", params['model_name'])
         y_pred_test = label_encoder.inverse_transform(y_pred_test)
         y_pred_train = label_encoder.inverse_transform(y_pred_train)
@@ -382,6 +395,18 @@ def runPipeline(X, y, showChart=True, parameters=None):
     
 
     return params
+
+def balanceData(X, y, method='smote', random_state=None):
+    if method == 'smote':
+        balancer = SMOTE(random_state=random_state)
+    elif method == 'undersample':
+        balancer = RandomUnderSampler(random_state=random_state)
+    else:
+        raise ValueError(f"Unknown balancing method: {method}")
+    
+    X_resampled, y_resampled = balancer.fit_resample(X, y)
+    return X_resampled, y_resampled
+
 
 def evaluateModel(trainData,testData,modelObject):
     pass
@@ -524,4 +549,11 @@ def boxplotGrid(df):
         axes_list[i].boxplot(data)
         axes_list[i].set_title(title)
     
+    plt.show()
+
+def correlation_heatmap(df):
+    plt.figure(figsize=(12, 10))
+    correlation_matrix = df.corr(numeric_only=True)
+    sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', cbar=True)
+    plt.title('Correlation Heatmap')
     plt.show()
